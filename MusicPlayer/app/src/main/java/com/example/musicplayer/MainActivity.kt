@@ -1,7 +1,11 @@
 package com.example.musicplayer
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -25,6 +29,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 val PrimaryPurple = Color(0xFFBB9EFF)
 val BackgroundDark = Color(0xFF170529)
@@ -33,6 +46,18 @@ val SurfaceDark = Color(0xFF250E3B)
 class MainActivity : ComponentActivity() {
 
     private val tracks = mutableStateListOf<Track>()
+
+    private val folderSelectionLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let {
+            contentResolver.takePersistableUriPermission(
+                it,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            scanFolder(it)
+        }
+    }
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -61,7 +86,19 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MusicPlayerApp(tracks = tracks)
+                    val navController = rememberNavController()
+                    NavHost(navController = navController, startDestination = "home") {
+                        composable("home") {
+                            MusicPlayerApp(
+                                tracks = tracks,
+                                navController = navController,
+                                onSelectFolder = { folderSelectionLauncher.launch(null) }
+                            )
+                        }
+                        composable("search") {
+                            SearchScreen(tracks = tracks, navController = navController)
+                        }
+                    }
                 }
             }
         }
@@ -70,6 +107,57 @@ class MainActivity : ComponentActivity() {
     private fun loadTracks() {
         tracks.clear()
         tracks.addAll(MediaStoreHelper.getTracks(this))
+    }
+
+    private fun scanFolder(treeUri: Uri) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val newTracks = mutableListOf<Track>()
+            val documentFile = DocumentFile.fromTreeUri(this@MainActivity, treeUri)
+            if (documentFile != null) {
+                traverseFolder(documentFile, newTracks)
+            }
+            withContext(Dispatchers.Main) {
+                tracks.clear()
+                tracks.addAll(newTracks)
+            }
+        }
+    }
+
+    private fun traverseFolder(folder: DocumentFile, tracksOut: MutableList<Track>) {
+        folder.listFiles().forEach { file ->
+            if (file.isDirectory) {
+                traverseFolder(file, tracksOut)
+            } else if (file.isFile && (file.type?.startsWith("audio/") == true || file.name?.endsWith(".mp3") == true)) {
+                extractTrackMetadata(file)?.let { tracksOut.add(it) }
+            }
+        }
+    }
+
+    private fun extractTrackMetadata(file: DocumentFile): Track? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(this, file.uri)
+            val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE) ?: file.name ?: "Unknown Title"
+            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST) ?: "Unknown Artist"
+            val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: "Unknown Album"
+            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            val duration = durationStr?.toLongOrNull() ?: 0L
+
+            Track(
+                id = file.uri.hashCode().toLong(),
+                title = title,
+                artist = artist,
+                album = album,
+                duration = duration,
+                dataPath = file.uri.toString()
+            )
+        } catch (e: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (e: Exception) { }
+        }
     }
 
     private fun requestPermissions() {
@@ -93,45 +181,20 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MusicPlayerApp(tracks: List<Track>) {
+fun MusicPlayerApp(tracks: List<Track>, navController: NavController, onSelectFolder: () -> Unit) {
     var selectedTab by remember { mutableStateOf(0) }
     val tabs = listOf("Songs", "Albums", "Artists", "Playlists")
-    var isSearchActive by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    if (isSearchActive) {
-                        TextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("Search...") },
-                            singleLine = true,
-                            colors = TextFieldDefaults.textFieldColors(
-                                containerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                cursorColor = PrimaryPurple,
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        Text("Onyx Rhythm", fontWeight = FontWeight.Bold)
-                    }
-                },
+                title = { Text("Onyx Rhythm", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = {
-                        isSearchActive = !isSearchActive
-                        if (!isSearchActive) searchQuery = ""
-                    }) {
-                        Icon(
-                            if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
-                            contentDescription = "Search"
-                        )
+                    IconButton(onClick = onSelectFolder) {
+                        Icon(Icons.Default.Add, contentDescription = "Select Folder")
+                    }
+                    IconButton(onClick = { navController.navigate("search") }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -162,16 +225,74 @@ fun MusicPlayerApp(tracks: List<Track>) {
                 }
             }
 
-            val filteredTracks = tracks.filter {
-                it.title.contains(searchQuery, ignoreCase = true) ||
-                it.artist.contains(searchQuery, ignoreCase = true)
-            }
-
             when (selectedTab) {
-                0 -> SongsList(filteredTracks)
-                1 -> AlbumsList(filteredTracks)
-                2 -> ArtistsList(filteredTracks)
+                0 -> SongsList(tracks)
+                1 -> AlbumsList(tracks)
+                2 -> ArtistsList(tracks)
                 3 -> PlaylistsList()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SearchScreen(tracks: List<Track>, navController: NavController) {
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredTracks = tracks.filter {
+        it.title.contains(searchQuery, ignoreCase = true) ||
+        it.artist.contains(searchQuery, ignoreCase = true)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                title = {
+                    TextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search songs, artists...") },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            cursorColor = PrimaryPurple,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = BackgroundDark,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White
+                )
+            )
+        },
+        containerColor = BackgroundDark
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (filteredTracks.isEmpty() && searchQuery.isNotEmpty()) {
+                item {
+                    Text("No results found", color = Color.Gray, modifier = Modifier.padding(16.dp))
+                }
+            } else {
+                items(filteredTracks) { track ->
+                    SongItem(title = track.title, artist = track.artist)
+                }
             }
         }
     }
@@ -186,7 +307,7 @@ fun SongsList(tracks: List<Track>) {
     ) {
         if (tracks.isEmpty()) {
             item {
-                Text("No songs found", color = Color.Gray, modifier = Modifier.padding(16.dp))
+                Text("No songs found. Tap the + icon to scan a directory.", color = Color.Gray, modifier = Modifier.padding(16.dp))
             }
         } else {
             items(tracks) { track ->
@@ -251,7 +372,6 @@ fun PlaylistsList() {
         }
     }
 }
-
 
 @Composable
 fun SongItem(title: String, artist: String) {
