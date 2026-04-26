@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,12 +32,19 @@ val SurfaceDark = Color(0xFF250E3B)
 
 class MainActivity : ComponentActivity() {
 
+    private val tracks = mutableStateListOf<Track>()
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean -> }
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            loadTracks()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         requestPermissions()
 
         setContent {
@@ -53,10 +61,15 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MusicPlayerApp()
+                    MusicPlayerApp(tracks = tracks)
                 }
             }
         }
+    }
+
+    private fun loadTracks() {
+        tracks.clear()
+        tracks.addAll(MediaStoreHelper.getTracks(this))
     }
 
     private fun requestPermissions() {
@@ -72,23 +85,53 @@ class MainActivity : ComponentActivity() {
             ) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissionLauncher.launch(permission)
+        } else {
+            loadTracks()
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MusicPlayerApp() {
+fun MusicPlayerApp(tracks: List<Track>) {
     var selectedTab by remember { mutableStateOf(0) }
     val tabs = listOf("Songs", "Albums", "Artists", "Playlists")
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Onyx Rhythm", fontWeight = FontWeight.Bold) },
+                title = {
+                    if (isSearchActive) {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search...") },
+                            singleLine = true,
+                            colors = TextFieldDefaults.textFieldColors(
+                                containerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                cursorColor = PrimaryPurple,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text("Onyx Rhythm", fontWeight = FontWeight.Bold)
+                    }
+                },
                 actions = {
-                    IconButton(onClick = { /* TODO */ }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    IconButton(onClick = {
+                        isSearchActive = !isSearchActive
+                        if (!isSearchActive) searchQuery = ""
+                    }) {
+                        Icon(
+                            if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = "Search"
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -119,18 +162,96 @@ fun MusicPlayerApp() {
                 }
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(20) { index ->
-                    SongItem(title = "Velvet Thunder \${index + 1}", artist = "Luna Eclipse")
-                }
+            val filteredTracks = tracks.filter {
+                it.title.contains(searchQuery, ignoreCase = true) ||
+                it.artist.contains(searchQuery, ignoreCase = true)
+            }
+
+            when (selectedTab) {
+                0 -> SongsList(filteredTracks)
+                1 -> AlbumsList(filteredTracks)
+                2 -> ArtistsList(filteredTracks)
+                3 -> PlaylistsList()
             }
         }
     }
 }
+
+@Composable
+fun SongsList(tracks: List<Track>) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        if (tracks.isEmpty()) {
+            item {
+                Text("No songs found", color = Color.Gray, modifier = Modifier.padding(16.dp))
+            }
+        } else {
+            items(tracks) { track ->
+                SongItem(title = track.title, artist = track.artist)
+            }
+        }
+    }
+}
+
+@Composable
+fun AlbumsList(tracks: List<Track>) {
+    val albums = tracks.map { it.album }.distinct()
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        if (albums.isEmpty()) {
+            item {
+                Text("No albums found", color = Color.Gray, modifier = Modifier.padding(16.dp))
+            }
+        } else {
+            items(albums) { album ->
+                Text(album, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White, modifier = Modifier.padding(vertical = 8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun ArtistsList(tracks: List<Track>) {
+    val artists = tracks.map { it.artist }.distinct()
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        if (artists.isEmpty()) {
+             item {
+                Text("No artists found", color = Color.Gray, modifier = Modifier.padding(16.dp))
+            }
+        } else {
+            items(artists) { artist ->
+                Text(artist, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White, modifier = Modifier.padding(vertical = 8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun PlaylistsList() {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Text("Favorites", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White, modifier = Modifier.padding(vertical = 8.dp))
+        }
+        item {
+            Text("Recently Played", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White, modifier = Modifier.padding(vertical = 8.dp))
+        }
+    }
+}
+
 
 @Composable
 fun SongItem(title: String, artist: String) {
